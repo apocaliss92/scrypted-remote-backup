@@ -9,4 +9,5 @@ Supported services
 - Samba (requires smbclient installed on host)
 
 TODO
+- Show error notification if samba is not installed on host
 - As soon as another service will be implemented, create an interface and implement for each service
