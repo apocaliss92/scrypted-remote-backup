@@ -279,6 +279,7 @@ export default class RemoteBackup extends ScryptedDeviceBase {
         const { fileName, filePath } = await this.downloadBackup(date);
 
         if (backupService === BackupService.Samba) {
+            this.console.log('Check the readme in Samba section to check how to install the samba client')
             await this.executeBackupSamba(fileName, filePath);
         }
     }
