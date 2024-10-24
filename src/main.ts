@@ -28,14 +28,6 @@ export default class RemoteBackup extends ScryptedDeviceBase {
             defaultValue: true,
             immediate: true,
         },
-        scryptedAddress: {
-            title: 'Scrypted address',
-            type: 'string',
-        },
-        scryptedToken: {
-            title: 'Scrypted token',
-            type: 'string',
-        },
         backupService: {
             title: 'Backup service',
             type: 'string',
@@ -257,26 +249,12 @@ export default class RemoteBackup extends ScryptedDeviceBase {
     }
 
     async downloadBackup(date: Date) {
-        this.console.log('Starting backup download');
-        const scryptedAddress = this.storageSettings.getItem('scryptedAddress');
-        const scryptedToken = this.storageSettings.getItem('scryptedToken');
-
-        if (!scryptedAddress || !scryptedToken) {
-            this.console.log('Scrypted address or token not set');
-
-            return;
-        }
+        this.console.log(`Starting backup download `);
 
         try {
-            const response = await axios.get(`${scryptedAddress}/web/component/backup`, {
-                responseType: 'arraybuffer',
-                headers: {
-                    'Authorization': `Bearer ${scryptedToken}`,
-                },
-            });
-
-            const buffer = Buffer.from(response.data as any);
-            const fileSize = (buffer.length * 0.001).toFixed(1);
+            const bkup = await sdk.systemManager.getComponent("backup");
+            const buffer = await bkup.createBackup();
+            const fileSize = (buffer.length * 0.000001).toFixed(1);
             console.log(`Downloaded successfull. File size: ${fileSize} mb.`);
 
             if (!fs.existsSync(BACKUP_FOLDER)) {
@@ -294,9 +272,6 @@ export default class RemoteBackup extends ScryptedDeviceBase {
             return;
         }
     }
-    // const ep = await sdk.endpointManager.getLocalEndpoint();
-    // const fileURLToPath = url.pathToFileURL(filePath).toString()
-    // return await sdk.mediaManager.createMediaObjectFromUrl(fileURLToPath);
 
     async executeBackup(date: Date) {
         const backupService = this.storageSettings.getItem('backupService') as BackupService;
@@ -440,7 +415,7 @@ export default class RemoteBackup extends ScryptedDeviceBase {
             }
             this.console.log(`Samba cleanup completed`);
         } else {
-            this.console.log(`Nothing to cleanup on Samba`);
+            this.console.log(`Nothing to cleanup on local`);
         }
     }
 }
