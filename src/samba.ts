@@ -22,6 +22,10 @@ export class Samba extends SambaClient implements BackupService {
         super(props);
     }
 
+    log(message?: any, ...optionalParams: any[]) {
+        this.console.log(`[SAMBA] `, message, ...optionalParams);
+    }
+
     downloadBackup(props: { filePrefix: string }): Promise<Buffer> {
         throw new Error("Method not implemented.");
     }
@@ -29,11 +33,11 @@ export class Samba extends SambaClient implements BackupService {
     async uploadBackup(props: { fileName: string; filePath: string; }) {
         const { fileName, filePath } = props;
         const dst = fileName;
-        this.console.log(`Uploading file to SMB. Source path is ${filePath}, destination is ${dst}`);
+        this.log(`Uploading file to SMB. Source path is ${filePath}, destination is ${dst}`);
         try {
             await this.sendFile(filePath, dst);
         } catch (e) {
-            this.console.log('Error uploading backup to SMB', e);
+            this.log('Error uploading backup to SMB', e);
         }
     }
 
@@ -49,9 +53,9 @@ export class Samba extends SambaClient implements BackupService {
             for (const fileName of filesToRemove) {
                 try {
                     await this.deleteFile(fileName);
-                    this.console.log(`File ${fileName} removed`);
+                    this.log(`File ${fileName} removed`);
                 } catch (e) {
-                    this.console.log(`Error removing file ${fileName}`, e);
+                    this.log(`Error removing file ${fileName}`, e);
                 }
             }
         }

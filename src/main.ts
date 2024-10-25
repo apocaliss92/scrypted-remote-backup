@@ -247,7 +247,7 @@ export default class RemoteBackup extends ScryptedDeviceBase {
                         host,
                         port,
                         username,
-                        password
+                        password,
                     },
                     targetDirectory,
                     this.console);

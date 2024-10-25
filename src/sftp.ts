@@ -4,10 +4,14 @@ import { BackupService, fileExtension, findFilesToRemove } from "./types";
 export class Sftp implements BackupService {
     private client: SftpClient;
     constructor(
-        private connectOptions: SftpClient.ConnectOptions, 
-        private targetDirectory: string, 
+        private connectOptions: SftpClient.ConnectOptions,
+        private targetDirectory: string,
         public console: Console
     ) {
+    }
+
+    log(message?: any, ...optionalParams: any[]) {
+        this.console.log(`[SFTP] `, message, ...optionalParams);
     }
 
     downloadBackup(props: { filePrefix: string, targetDirectory?: string }): Promise<Buffer> {
@@ -29,12 +33,12 @@ export class Sftp implements BackupService {
     async uploadBackup(props: { fileName: string; filePath: string; }) {
         const { fileName, filePath } = props;
         const dst = `${this.targetDirectory}/${fileName}`;
-        this.console.log(`Uploading file to SFTP. Source path is ${filePath}, destination is ${dst}`);
+        this.log(`Uploading file to SFTP. Source path is ${filePath}, destination is ${dst}`);
         const client = await this.getClient();
         try {
             await client.put(filePath, dst);
         } catch (e) {
-            this.console.log('Error uploading backup to SMB', e);
+            this.log('Error uploading backup to SMB', e);
         }
     }
 
@@ -52,10 +56,10 @@ export class Sftp implements BackupService {
             for (const fileName of filesToRemove) {
                 try {
                     const filePAth = `${this.targetDirectory}/${fileName}`;
-                    await client.delete(fileName);
-                    this.console.log(`File ${fileName} removed`);
+                    await client.delete(filePAth, true);
+                    this.log(`File ${fileName} removed`);
                 } catch (e) {
-                    this.console.log(`Error removing file ${fileName}`, e);
+                    this.log(`Error removing file ${fileName}`, e);
                 }
             }
         }
