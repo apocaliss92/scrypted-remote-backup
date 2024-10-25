@@ -13,7 +13,9 @@ Supported services
     -  Proxmox script
         - run apt install smbclient -y
 
-Use this link to calculate your cron string https://crontab.guru/#0_5_*_*_* 
+Use this link to calculate your cron string 
+- https://crontab.guru/#0_5_*_*_* 
+- https://www.npmjs.com/package/node-cron 
 
 TODO
 - Show error notification if samba is not installed on host

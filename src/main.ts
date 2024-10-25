@@ -1,25 +1,18 @@
 import sdk, { ScryptedDeviceBase, Setting, SettingValue } from "@scrypted/sdk";
 import { StorageSettings } from "@scrypted/sdk/storage-settings";
-import axios from "axios";
 import cron, { ScheduledTask } from 'node-cron';
-import SambaClient from 'samba-client';
 import fs from "fs"
 import path from 'path';
-import orderBy from 'lodash/orderBy'
+import { Samba } from "./samba";
+import { BackupService, BackupServiceEnum, fileExtension, findFilesToRemove } from "./types";
+import { Local } from "./local";
 
-const getStringifiedNumbers = (start: number, end: number) => ([
-    '*',
-    ...Array.from(Array(end + start).keys()).map(i => String(i + start))
-]);
-enum BackupService {
-    Samba = 'Samba'
-}
-const backupServices: BackupService[] = [BackupService.Samba];
 const BACKUP_FOLDER = path.join(process.env.SCRYPTED_PLUGIN_VOLUME, 'backups');
-const fileExtension = '.zip';
+const backupServices: BackupServiceEnum[] = [BackupServiceEnum.Samba];
 
 export default class RemoteBackup extends ScryptedDeviceBase {
     private cronTask: ScheduledTask;
+    private localService: Local;
 
     storageSettings = new StorageSettings(this, {
         pluginEnabled: {
@@ -33,6 +26,37 @@ export default class RemoteBackup extends ScryptedDeviceBase {
             type: 'string',
             choices: backupServices,
             defaultValue: backupServices[0]
+        },
+        maxBackupsLocal: {
+            title: 'Max backups to keep locally',
+            type: 'number',
+            defaultValue: 7,
+        },
+        maxBackupsCloud: {
+            title: 'Max backups to keep on cloud',
+            type: 'number',
+            defaultValue: 7,
+        },
+        filePrefix: {
+            title: 'File prefix. Should not contain the character "_"',
+            type: 'string',
+            defaultValue: 'scrypted-backup'
+        },
+        cronSchedule: {
+            title: 'Cron scheduler',
+            type: 'string',
+            defaultValue: '0 4 * * *'
+        },
+        backupNow: {
+            title: 'Manual backup',
+            type: 'button',
+            onPut: async () => await this.executeBackup(new Date())
+        },
+        checkFiles: {
+            title: 'Check files',
+            description: 'Remove all the exceeding files on both local and cloud',
+            type: 'button',
+            onPut: async () => await this.checkMaxFiles()
         },
         // SAMBA
         sambaAddress: {
@@ -82,94 +106,19 @@ export default class RemoteBackup extends ScryptedDeviceBase {
             hide: true,
         },
         // SAMBA
-        maxBackupsLocal: {
-            title: 'Max backups to keep locally',
-            group: 'Retention',
-            type: 'number',
-            defaultValue: 7,
-        },
-        maxBackupsCloud: {
-            title: 'Max backups to keep on cloud',
-            group: 'Retention',
-            type: 'number',
-            defaultValue: 7,
-        },
-        filePrefix: {
-            title: 'File prefix. Should not contain the character "_"',
-            group: 'Retention',
-            type: 'string',
-            defaultValue: 'scrypted-backup'
-        },
-        backupNow: {
-            title: 'Execute backup',
-            group: 'Retention',
-            type: 'button',
-            onPut: async () => await this.executeBackup(new Date())
-        },
-        checkFiles: {
-            title: 'Check files',
-            group: 'Retention',
-            type: 'button',
-        },
-        dayOfWeek: {
-            title: 'Day in the week',
-            group: 'Scheduler',
-            type: 'string',
-            choices: getStringifiedNumbers(1, 7),
-            defaultValue: '*'
-        },
-        month: {
-            title: 'Month',
-            group: 'Scheduler',
-            type: 'string',
-            choices: getStringifiedNumbers(1, 12),
-            defaultValue: '*'
-        },
-        dayOfMonth: {
-            title: 'Day in the month',
-            type: 'string',
-            group: 'Scheduler',
-            choices: getStringifiedNumbers(1, 31),
-            defaultValue: '*'
-        },
-        hour: {
-            title: 'Hour',
-            group: 'Scheduler',
-            type: 'string',
-            choices: getStringifiedNumbers(0, 23),
-            defaultValue: '4'
-        },
-        minute: {
-            title: 'Minute',
-            group: 'Scheduler',
-            type: 'string',
-            choices: getStringifiedNumbers(0, 59),
-            defaultValue: '0'
-        },
-        second: {
-            title: 'Second',
-            group: 'Scheduler',
-            type: 'string',
-            choices: getStringifiedNumbers(0, 59),
-            defaultValue: '*'
-        },
     });
 
     constructor(nativeId: string) {
         super(nativeId);
 
         const keysToReinitialize: (keyof typeof this.storageSettings.settings)[] = [
-            'second',
-            'minute',
-            'hour',
-            'dayOfWeek',
-            'month',
-            'dayOfMonth',
+            'cronSchedule',
             'pluginEnabled',
         ]
 
         keysToReinitialize.forEach(key => this.storageSettings.settings[key].onPut = async () => this.initScheduler());
 
+        this.localService = new Local(BACKUP_FOLDER, this.console);
         this.storageSettings.settings.checkFiles.onPut = async () => await this.checkMaxFiles();
         this.initScheduler().then().catch(console.log);
     }
@@ -178,7 +127,7 @@ export default class RemoteBackup extends ScryptedDeviceBase {
 
         const backupService = this.storageSettings.getItem('backupService');
 
-        if (backupService === BackupService.Samba) {
+        if (backupService === BackupServiceEnum.Samba) {
             this.storageSettings.settings.sambaAddress.hide = false;
             this.storageSettings.settings.sambaTargetDirectory.hide = false;
             this.storageSettings.settings.sambaUsername.hide = false;
@@ -210,14 +159,13 @@ export default class RemoteBackup extends ScryptedDeviceBase {
                 return;
             }
 
-            const second = this.storageSettings.getItem('second') || '*';
-            const minute = this.storageSettings.getItem('minute') || '*';
-            const hour = this.storageSettings.getItem('hour') || '*';
-            const dayOfMonth = this.storageSettings.getItem('dayOfMonth') || '*';
-            const month = this.storageSettings.getItem('month') || '*';
-            const dayOfWeek = this.storageSettings.getItem('dayOfWeek') || '*';
+            const cronTime = this.storageSettings.getItem('cronSchedule');
+            if (!cronTime) {
+                this.console.log(`Cron scheduler is not set`);
 
-            const cronTime = `${second} ${minute} ${hour} ${dayOfMonth} ${month} ${dayOfWeek}`;
+                return;
+            }
+
             this.console.log(`Starting scheduler with ${cronTime}`);
 
             this.cronTask = cron.schedule(cronTime, async () => {
@@ -235,188 +183,56 @@ export default class RemoteBackup extends ScryptedDeviceBase {
         }
     }
 
-    private getFileNames(now: Date) {
-        const prefix = this.storageSettings.getItem('filePrefix') || 'scrypted-backup';
-        const date = `${now.getFullYear()}_${now.getMonth() + 1}_${now.getDate()}_${now.getHours()}_${now.getMinutes()}_${now.getSeconds()}`;
-        const fileName = `${prefix}-${date}${fileExtension}`;
-
-        const filePath = `${BACKUP_FOLDER}/${fileName}`;
-
-        return {
-            fileName,
-            filePath,
-        }
-    }
-
-    async downloadBackup(date: Date) {
-        this.console.log(`Starting backup download `);
-
+    private async getBackupService() {
         try {
-            const bkup = await sdk.systemManager.getComponent("backup");
-            const buffer = await bkup.createBackup();
-            const fileSize = (buffer.length * 0.000001).toFixed(1);
-            console.log(`Downloaded successfull. File size: ${fileSize} mb.`);
+            if (this.storageSettings.values.backupService === BackupServiceEnum.Samba) {
+                const address = this.storageSettings.getItem('sambaAddress');
+                const username = this.storageSettings.getItem('sambaUsername');
+                const password = this.storageSettings.getItem('sambaPassword');
+                const domain = this.storageSettings.getItem('sambaDomain');
+                const maxProtocol = this.storageSettings.getItem('sambaMaxProtocol');
+                const maskCmd = this.storageSettings.getItem('sambaMaskCmd');
+                const directory = this.storageSettings.getItem('sambaTargetDirectory');
 
-            if (!fs.existsSync(BACKUP_FOLDER)) {
-                this.console.log(`Creating backups dir at: ${BACKUP_FOLDER}`)
-                fs.mkdirSync(BACKUP_FOLDER);
+                return new Samba({
+                    address,
+                    username,
+                    password,
+                    domain,
+                    maxProtocol,
+                    maskCmd,
+                    directory
+                }, this.console)
             }
-
-            const { filePath, fileName } = this.getFileNames(date);
-
-            await fs.promises.writeFile(filePath, buffer);
-
-            return { filePath, fileName };
         } catch (e) {
-            this.console.log('Error downloading backup', e);
-            return;
+            this.console.log('Error during service init', e);
         }
     }
 
     async executeBackup(date: Date) {
-        const backupService = this.storageSettings.getItem('backupService') as BackupService;
+        const filePrefix = this.storageSettings.getItem('filePrefix');
+        const { fileName, filePath } = await this.localService.downloadBackup({ filePrefix, date })
 
-        const { fileName, filePath } = await this.downloadBackup(date);
+        const service = this.storageSettings.values.backupService as BackupServiceEnum;
 
-        if (backupService === BackupService.Samba) {
-            this.console.log('Check the readme in Samba section to check how to install the samba client')
-            await this.executeBackupSamba(fileName, filePath);
-        }
-    }
-
-    async getSambaClient() {
-        const address = this.storageSettings.getItem('sambaAddress');
-        const username = this.storageSettings.getItem('sambaUsername');
-        const password = this.storageSettings.getItem('sambaPassword');
-        const domain = this.storageSettings.getItem('sambaDomain');
-        const maxProtocol = this.storageSettings.getItem('sambaMaxProtocol');
-        const maskCmd = this.storageSettings.getItem('sambaMaskCmd');
-        const directory = this.storageSettings.getItem('sambaTargetDirectory');
-
-        if (!address) {
-            this.console.log('Address and targetDirectory are required');
-
-            return;
-        }
-
-        let client: SambaClient;
-
-        try {
-            client = new SambaClient({
-                address,
-                username,
-                password,
-                domain,
-                maxProtocol,
-                maskCmd,
-                directory
-            });
-        } catch (e) {
-            this.console.log('Error during Samba connection', e);
-            return;
-        }
-
-        return client;
-    }
-
-    async executeBackupSamba(fileName: string, filePath: string) {
-        const client = await this.getSambaClient();
-
-        const dst = fileName;
-        this.console.log(`Uploading file to SMB. Source path is ${filePath}, destination is :${dst}`);
-        try {
-            await client.sendFile(filePath, dst);
-        } catch (e) {
-            this.console.log('Error uploading backup to SMB', e);
-        }
-
-        this.console.log(`Upload to SMB completed.`);
+        this.console.log(`Starting upload to ${service}.`);
+        (await this.getBackupService()).uploadBackup({ fileName, filePath });
+        this.console.log(`Upload to ${service} completed.`);
     }
 
     async checkMaxFiles() {
-        const backupService = this.storageSettings.getItem('backupService') as BackupService;
-
-        if (backupService === BackupService.Samba) {
-            await this.checkSambaMaxFiles();
-        }
-
-        await this.checkLocalMaxFiles();
-    }
-
-    private parseFiles(fileNames: string[], filesToKeep: number) {
-        const filePrefix = this.storageSettings.getItem('filePrefix') as BackupService;
-        const fileDateMap: Record<string, number> = {};
-        for (const fileName of fileNames) {
-            const fileDate = fileName.split(filePrefix)[1].replace(fileExtension, '').replace('-', '');
-            const [year, month, day, hour, minute, second] = fileDate.split('_');
-            const date = new Date();
-
-            date.setFullYear(Number(year));
-            date.setMonth(Number(month));
-            date.setDate(Number(day));
-            date.setHours(Number(hour));
-            date.setMinutes(Number(minute));
-            date.setSeconds(Number(second));
-            date.setMilliseconds(0);
-
-            fileDateMap[fileName] = date.getTime();
-        }
-
-        const filesOrderedByDate = orderBy(fileNames, fileName => fileDateMap[fileName], 'asc');
-        const filesCountToRemove = filesOrderedByDate.length - filesToKeep;
-        const filesToRemove = filesOrderedByDate.splice(0, filesCountToRemove);
-
-        return filesToRemove;
-    }
-
-    async checkSambaMaxFiles() {
-        this.console.log(`Starting Samba cleanup`);
+        const service = this.storageSettings.getItem('backupService') as BackupServiceEnum;
         const maxBackupsCloud = this.storageSettings.getItem('maxBackupsCloud') as number;
-        const client = await this.getSambaClient();
-        const filePrefix = this.storageSettings.getItem('filePrefix') as BackupService;
-        const allFiles = await client.listFiles(filePrefix, fileExtension);
-
-        const filesToRemove = this.parseFiles(allFiles, maxBackupsCloud);
-        const filesCountToRemove = filesToRemove.length;
-
-        if (filesCountToRemove > 0) {
-            this.console.log(`Removing ${filesCountToRemove} old backups`);
-            for (const fileName of filesToRemove) {
-                try {
-                    await client.deleteFile(fileName);
-                    this.console.log(`File ${fileName} removed`);
-                } catch (e) {
-                    this.console.log(`Error removing file ${fileName}`, e);
-                }
-            }
-            this.console.log(`Samba cleanup completed`);
-        } else {
-            this.console.log(`Nothing to cleanup on Samba`);
-        }
-    }
-
-    async checkLocalMaxFiles() {
-        this.console.log(`Starting Local cleanup`);
         const maxBackupsLocal = this.storageSettings.getItem('maxBackupsLocal') as number;
-        const filePrefix = this.storageSettings.getItem('filePrefix') as BackupService;
-        const allFiles = (await fs.promises.readdir(BACKUP_FOLDER)).filter(fileName => fileName.startsWith(filePrefix));
+        const filePrefix = this.storageSettings.getItem('filePrefix');
 
-        const filesToRemove = this.parseFiles(allFiles, maxBackupsLocal);
-        const filesCountToRemove = filesToRemove.length;
+        const cloudClient = await this.getBackupService();
+        this.console.log(`Starting ${service} max filess cleanup.`);
+        const serviceFilesRemoved = await cloudClient.pruneOldBackups({ filePrefix, maxBackups: maxBackupsCloud });
+        this.console.log(`${service} max files cleanup completed. Removed ${serviceFilesRemoved} backups.`);
 
-        if (filesCountToRemove > 0) {
-            this.console.log(`Removing ${filesCountToRemove} old backups`);
-            for (const fileName of filesToRemove) {
-                try {
-                    await fs.promises.unlink(`${BACKUP_FOLDER}/${fileName}`);
-                    this.console.log(`File ${fileName} removed`);
-                } catch (e) {
-                    this.console.log(`Error removing file ${fileName}`, e);
-                }
-            }
-            this.console.log(`Samba cleanup completed`);
-        } else {
-            this.console.log(`Nothing to cleanup on local`);
-        }
+        this.console.log(`Starting local max filess cleanup.`);
+        const localFilesRemoved = await this.localService.pruneOldBackups({ filePrefix, maxBackups: maxBackupsLocal });
+        this.console.log(`Local max files cleanup completed. Removed ${localFilesRemoved} backups.`);
     }
 }
