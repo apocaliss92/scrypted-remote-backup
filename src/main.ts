@@ -1,14 +1,10 @@
-import sdk, { ScryptedDeviceBase, Setting, SettingValue } from "@scrypted/sdk";
+import { ScryptedDeviceBase, Setting, SettingValue } from "@scrypted/sdk";
 import { StorageSettings } from "@scrypted/sdk/storage-settings";
 import cron, { ScheduledTask } from 'node-cron';
-import fs from "fs"
-import path from 'path';
 import { Samba } from "./samba";
-import { BackupService, BackupServiceEnum, fileExtension, findFilesToRemove } from "./types";
+import { BackupServiceEnum } from "./types";
 import { Local } from "./local";
-
-const BACKUP_FOLDER = path.join(process.env.SCRYPTED_PLUGIN_VOLUME, 'backups');
-const backupServices: BackupServiceEnum[] = [BackupServiceEnum.Samba];
+import { Sftp } from "./sftp";
 
 export default class RemoteBackup extends ScryptedDeviceBase {
     private cronTask: ScheduledTask;
@@ -24,8 +20,9 @@ export default class RemoteBackup extends ScryptedDeviceBase {
         backupService: {
             title: 'Backup service',
             type: 'string',
-            choices: backupServices,
-            defaultValue: backupServices[0]
+            choices: [BackupServiceEnum.Samba, BackupServiceEnum.SFTP],
+            defaultValue: BackupServiceEnum.Samba,
+            immediate: true,
         },
         maxBackupsLocal: {
             title: 'Max backups to keep locally',
@@ -61,27 +58,27 @@ export default class RemoteBackup extends ScryptedDeviceBase {
         // SAMBA
         sambaAddress: {
             title: 'Server address',
-            group: 'Samba',
+            group: BackupServiceEnum.Samba,
             type: 'string',
             hide: true,
             placeholder: '//server/share'
         },
         sambaTargetDirectory: {
             title: 'Target directory in the share',
-            group: 'Samba',
+            group: BackupServiceEnum.Samba,
             type: 'string',
             hide: true
         },
         sambaUsername: {
             title: 'Username',
-            group: 'Samba',
+            group: BackupServiceEnum.Samba,
             type: 'string',
             hide: true,
             placeholder: 'guest'
         },
         sambaPassword: {
             title: 'Password',
-            group: 'Samba',
+            group: BackupServiceEnum.Samba,
             type: 'password',
         },
         sambaDomain: {
@@ -93,19 +90,55 @@ export default class RemoteBackup extends ScryptedDeviceBase {
         },
         sambaMaxProtocol: {
             title: 'Max protocol',
-            group: 'Samba',
+            group: BackupServiceEnum.Samba,
             placeholder: 'SMB3',
             type: 'string',
             hide: true,
         },
         sambaMaskCmd: {
             title: 'Mask commands',
-            group: 'Samba',
+            group: BackupServiceEnum.Samba,
             type: 'boolean',
             defaultValue: false,
             hide: true,
         },
         // SAMBA
+        //
+        // SFTP
+        sftpHost: {
+            title: 'Server host',
+            group: BackupServiceEnum.SFTP,
+            type: 'string',
+            hide: true,
+            placeholder: '192.168.1.1'
+        },
+        sftpPort: {
+            title: 'Server port',
+            group: BackupServiceEnum.SFTP,
+            type: 'number',
+            hide: true,
+            placeholder: '22',
+            defaultValue: 22
+        },
+        sftpTargetDirectory: {
+            title: 'Target directory',
+            group: BackupServiceEnum.SFTP,
+            type: 'string',
+            hide: true
+        },
+        sftpUsername: {
+            title: 'Username',
+            group: BackupServiceEnum.SFTP,
+            type: 'string',
+            hide: true,
+            placeholder: 'guest'
+        },
+        sftpPassword: {
+            title: 'Password',
+            group: BackupServiceEnum.SFTP,
+            type: 'password',
+        },
+        // SFTP
     });
 
     constructor(nativeId: string) {
@@ -118,23 +151,22 @@ export default class RemoteBackup extends ScryptedDeviceBase {
 
         keysToReinitialize.forEach(key => this.storageSettings.settings[key].onPut = async () => this.initScheduler());
 
-        this.localService = new Local(BACKUP_FOLDER, this.console);
+        this.localService = new Local(this.console);
         this.storageSettings.settings.checkFiles.onPut = async () => await this.checkMaxFiles();
         this.initScheduler().then().catch(console.log);
     }
 
     async getSettings() {
-
         const backupService = this.storageSettings.getItem('backupService');
+        const allServices = this.storageSettings.settings.backupService.choices;
 
-        if (backupService === BackupServiceEnum.Samba) {
-            this.storageSettings.settings.sambaAddress.hide = false;
-            this.storageSettings.settings.sambaTargetDirectory.hide = false;
-            this.storageSettings.settings.sambaUsername.hide = false;
-            this.storageSettings.settings.sambaPassword.hide = false;
-            this.storageSettings.settings.sambaDomain.hide = false;
-            this.storageSettings.settings.sambaMaskCmd.hide = false;
-        }
+        Object.entries(this.storageSettings.settings).forEach(([_, setting]) => {
+            if (setting.group === backupService) {
+                setting.hide = false;
+            } else if (allServices.includes(setting.group)) {
+                setting.hide = true;
+            }
+        })
 
         const settings: Setting[] = await this.storageSettings.getSettings();
 
@@ -202,7 +234,23 @@ export default class RemoteBackup extends ScryptedDeviceBase {
                     maxProtocol,
                     maskCmd,
                     directory
-                }, this.console)
+                }, this.console);
+            } else if (this.storageSettings.values.backupService === BackupServiceEnum.SFTP) {
+                const host = this.storageSettings.getItem('sftpHost');
+                const port = this.storageSettings.getItem('sftpPort');
+                const username = this.storageSettings.getItem('sftpUsername');
+                const password = this.storageSettings.getItem('sftpPassword');
+                const targetDirectory = this.storageSettings.getItem('sftpTargetDirectory');
+
+                return new Sftp(
+                    {
+                        host,
+                        port,
+                        username,
+                        password
+                    },
+                    targetDirectory,
+                    this.console);
             }
         } catch (e) {
             this.console.log('Error during service init', e);
@@ -215,8 +263,9 @@ export default class RemoteBackup extends ScryptedDeviceBase {
 
         const service = this.storageSettings.values.backupService as BackupServiceEnum;
 
+        const serviceClient = await this.getBackupService();
         this.console.log(`Starting upload to ${service}.`);
-        (await this.getBackupService()).uploadBackup({ fileName, filePath });
+        await serviceClient.uploadBackup({ fileName, filePath });
         this.console.log(`Upload to ${service} completed.`);
     }
 

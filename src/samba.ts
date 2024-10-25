@@ -29,7 +29,7 @@ export class Samba extends SambaClient implements BackupService {
     async uploadBackup(props: { fileName: string; filePath: string; }) {
         const { fileName, filePath } = props;
         const dst = fileName;
-        this.console.log(`Uploading file to SMB. Source path is ${filePath}, destination is :${dst}`);
+        this.console.log(`Uploading file to SMB. Source path is ${filePath}, destination is ${dst}`);
         try {
             await this.sendFile(filePath, dst);
         } catch (e) {

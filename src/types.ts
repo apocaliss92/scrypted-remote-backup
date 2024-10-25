@@ -1,4 +1,4 @@
-import orderBy from "lodash/orderBy";
+import { orderBy } from "lodash";
 
 export interface DownloadedFile {
 
@@ -13,7 +13,8 @@ export interface BackupService {
 }
 
 export enum BackupServiceEnum {
-    Samba = 'Samba'
+    Samba = 'Samba',
+    SFTP = 'SFTP',
 }
 
 export const fileExtension = '.zip';

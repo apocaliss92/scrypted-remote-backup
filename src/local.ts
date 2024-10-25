@@ -1,9 +1,12 @@
 import sdk from "@scrypted/sdk";
 import { fileExtension, findFilesToRemove } from "./types";
 import fs from "fs"
+import path from 'path';
 
 export class Local {
-    constructor(public backupFolder: string, public console: Console) { }
+    private backupFolder = path.join(process.env.SCRYPTED_PLUGIN_VOLUME, 'backups');
+
+    constructor(public console: Console) { }
 
     private getFileNames(now: Date, filePrefix: string) {
         const date = `${now.getFullYear()}_${now.getMonth() + 1}_${now.getDate()}_${now.getHours()}_${now.getMinutes()}_${now.getSeconds()}`;
