@@ -31,12 +31,14 @@ export default class RemoteBackup extends ScryptedDeviceBase {
             immediate: true,
         },
         maxBackupsLocal: {
-            title: 'Max backups to keep locally',
+            title: 'Max local backups',
+            description: 'Maximum amount of backups to retain on the scrypted\' plugin folder',
             type: 'number',
             defaultValue: 7,
         },
         maxBackupsCloud: {
-            title: 'Max backups to keep on cloud',
+            title: 'Max cloud backups',
+            description: 'Maximum amount of backups to retain on the selected backup service',
             type: 'number',
             defaultValue: 7,
         },
