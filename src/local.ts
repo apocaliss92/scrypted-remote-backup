@@ -1,12 +1,42 @@
 import sdk from "@scrypted/sdk";
-import { fileExtension, findFilesToRemove } from "./types";
+import { BackupService, fileExtension, findFilesToRemove } from "./types";
 import fs from "fs"
 import path from 'path';
 
-export class Local {
+export class Local implements BackupService {
     private backupFolder = path.join(process.env.SCRYPTED_PLUGIN_VOLUME, 'backups');
 
     constructor(public console: Console) { }
+
+    log(message?: any, ...optionalParams: any[]) {
+        this.console.log(`[LOCAL] `, message, ...optionalParams);
+    }
+
+    async uploadBackup(props: { buffer?: Buffer }): Promise<void> {
+        const bkup = await sdk.systemManager.getComponent('backup');
+        await bkup.restoreBackup(props.buffer);
+    }
+
+    async getBackupsList(props: { filePrefix: string; }): Promise<string[]> {
+        const { filePrefix } = props;
+        const allFiles = (await fs.promises.readdir(this.backupFolder)).filter(fileName => fileName.startsWith(filePrefix));
+
+        const { filesOrderedByDate } = findFilesToRemove({ fileNames: allFiles, filePrefix });
+
+        return filesOrderedByDate;
+    }
+
+    async getBackup(props: { fileName: string }) {
+        const { fileName } = props;
+        this.log(`Looking for the backup ${fileName}`);
+
+        try {
+            return await fs.promises.readFile(`${this.backupFolder}/${fileName}`);
+        } catch (e) {
+            this.log('Error finding the backup', e);
+            return;
+        }
+    }
 
     private getFileNames(now: Date, filePrefix: string) {
         const date = `${now.getFullYear()}_${now.getMonth() + 1}_${now.getDate()}_${now.getHours()}_${now.getMinutes()}_${now.getSeconds()}`;
@@ -20,13 +50,15 @@ export class Local {
         }
     }
 
-    async downloadBackup(props: { filePrefix: string; date: Date }) {
-        this.console.log(`Starting backup download.`);
+
+    async createBackup(props: { date: Date, filePrefix: string }) {
+        this.log(`Starting backup download.`);
+        const { date, filePrefix } = props;
 
         try {
             const { filePrefix, date } = props;
             if (!fs.existsSync(this.backupFolder)) {
-                this.console.log(`Creating backups dir at: ${this.backupFolder}`)
+                this.log(`Creating backups dir at: ${this.backupFolder}`)
                 fs.mkdirSync(this.backupFolder);
             }
 
@@ -37,10 +69,25 @@ export class Local {
 
             await fs.promises.writeFile(filePath, buffer);
 
-            this.console.log(`Backup download completed.`);
+            this.log(`Backup download completed.`);
             return { filePath, fileName };
         } catch (e) {
-            this.console.log('Error downloading backup', e);
+            this.log('Error downloading backup', e);
+            return;
+        }
+    }
+
+    async restoreBackup(props: { fileBuffer: Buffer }) {
+        this.log(`Starting backup restore.`);
+        const { fileBuffer } = props;
+
+        try {
+            const bkup = await sdk.systemManager.getComponent('backup');
+            await bkup.restore(fileBuffer);
+
+            this.log(`Backup restore completed.`);
+        } catch (e) {
+            this.log('Error restore backup', e);
             return;
         }
     }
@@ -49,17 +96,17 @@ export class Local {
         const { filePrefix, maxBackups } = props;
         const allFiles = (await fs.promises.readdir(this.backupFolder)).filter(fileName => fileName.startsWith(filePrefix));
 
-        const filesToRemove = findFilesToRemove({ fileNames: allFiles, filesToKeep: maxBackups, filePrefix });
+        const { filesToRemove } = findFilesToRemove({ fileNames: allFiles, filesToKeep: maxBackups, filePrefix });
         const filesCountToRemove = filesToRemove.length;
 
         if (filesCountToRemove > 0) {
-            this.console.log(`Removing ${filesCountToRemove} old backups`);
+            this.log(`Removing ${filesCountToRemove} old backups`);
             for (const fileName of filesToRemove) {
                 try {
                     await fs.promises.unlink(`${this.backupFolder}/${fileName}`);
-                    this.console.log(`File ${fileName} removed`);
+                    this.log(`File ${fileName} removed`);
                 } catch (e) {
-                    this.console.log(`Error removing file ${fileName}`, e);
+                    this.log(`Error removing file ${fileName}`, e);
                 }
             }
         }

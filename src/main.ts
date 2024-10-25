@@ -1,10 +1,16 @@
-import { ScryptedDeviceBase, Setting, SettingValue } from "@scrypted/sdk";
+import sdk, { ScryptedDeviceBase, Setting, SettingValue } from "@scrypted/sdk";
 import { StorageSettings } from "@scrypted/sdk/storage-settings";
 import cron, { ScheduledTask } from 'node-cron';
 import { Samba } from "./samba";
-import { BackupServiceEnum } from "./types";
+import { BackupServiceEnum, fileExtension, findFilesToRemove } from "./types";
 import { Local } from "./local";
 import { Sftp } from "./sftp";
+import fs from "fs"
+
+enum RestoreSource {
+    Local = 'Local',
+    Cloud = 'Cloud',
+}
 
 export default class RemoteBackup extends ScryptedDeviceBase {
     private cronTask: ScheduledTask;
@@ -55,6 +61,38 @@ export default class RemoteBackup extends ScryptedDeviceBase {
             type: 'button',
             onPut: async () => await this.checkMaxFiles()
         },
+        // RESTORE
+        restoreSource: {
+            title: 'Restore source',
+            group: 'Restore',
+            type: 'string',
+            choices: [RestoreSource.Local],
+            // choices: [RestoreSource.Local, RestoreSource.Cloud],
+            defaultValue: RestoreSource.Local,
+            immediate: true,
+            onPut: async () => await this.fetchFiles(),
+        },
+        backupToRestore: {
+            title: 'Backup file',
+            group: 'Restore',
+            type: 'string',
+            immediate: true,
+            choices: [],
+        },
+        refreshFiles: {
+            title: 'Refresh files',
+            group: 'Restore',
+            type: 'button',
+            onPut: async () => await this.fetchFiles(),
+        },
+        restore: {
+            title: 'Restore backup',
+            group: 'Restore',
+            type: 'button',
+            onPut: async () => await this.restoreBackup(),
+        },
+        // RESTORE
+        //
         // SAMBA
         sambaAddress: {
             title: 'Server address',
@@ -151,9 +189,11 @@ export default class RemoteBackup extends ScryptedDeviceBase {
 
         keysToReinitialize.forEach(key => this.storageSettings.settings[key].onPut = async () => this.initScheduler());
 
+
         this.localService = new Local(this.console);
         this.storageSettings.settings.checkFiles.onPut = async () => await this.checkMaxFiles();
         this.initScheduler().then().catch(console.log);
+        this.fetchFiles().then().catch(console.log);
     }
 
     async getSettings() {
@@ -175,6 +215,26 @@ export default class RemoteBackup extends ScryptedDeviceBase {
 
     putSetting(key: string, value: SettingValue): Promise<void> {
         return this.storageSettings.putSetting(key, value);
+    }
+
+    async fetchFiles() {
+        const filePrefix = this.storageSettings.getItem('filePrefix');
+        const restoreSource = this.storageSettings.getItem('restoreSource') as RestoreSource;
+
+        this.console.log(`Fetching available backups`);
+        try {
+            let backups = [];
+            if (restoreSource === RestoreSource.Local) {
+                const cloudService = await this.getBackupService();
+                backups = await cloudService.getBackupsList({ filePrefix });
+            } else {
+                backups = await this.localService.getBackupsList({ filePrefix });
+            }
+            this.console.log(`${backups.length} backups found.`);
+            this.storageSettings.settings.backupToRestore.choices = backups;
+        } catch (e) {
+            this.console.log('Error fetching available backups', e);
+        };
     }
 
     async initScheduler() {
@@ -259,7 +319,7 @@ export default class RemoteBackup extends ScryptedDeviceBase {
 
     async executeBackup(date: Date) {
         const filePrefix = this.storageSettings.getItem('filePrefix');
-        const { fileName, filePath } = await this.localService.downloadBackup({ filePrefix, date })
+        const { fileName, filePath } = await this.localService.createBackup({ date, filePrefix });
 
         const service = this.storageSettings.values.backupService as BackupServiceEnum;
 
@@ -283,5 +343,25 @@ export default class RemoteBackup extends ScryptedDeviceBase {
         this.console.log(`Starting local max filess cleanup.`);
         const localFilesRemoved = await this.localService.pruneOldBackups({ filePrefix, maxBackups: maxBackupsLocal });
         this.console.log(`Local max files cleanup completed. Removed ${localFilesRemoved} backups.`);
+    }
+
+    async restoreBackup() {
+        const restoreSource = this.storageSettings.getItem('restoreSource') as RestoreSource;
+        const backupToRestore = this.storageSettings.getItem('backupToRestore');
+
+        this.storageSettings.putSetting('backupToRestore', undefined);
+
+        this.console.log(`Restoring backup ${backupToRestore} from ${restoreSource}`);
+
+        let buffer: Buffer;
+
+        if (restoreSource === RestoreSource.Cloud) {
+            const cloudClient = await this.getBackupService();
+            buffer = await cloudClient.getBackup({ fileName: backupToRestore });
+        } else {
+            buffer = await this.localService.getBackup({ fileName: backupToRestore });
+        }
+
+        await this.localService.uploadBackup({ buffer });
     }
 }

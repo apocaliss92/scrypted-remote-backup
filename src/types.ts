@@ -1,4 +1,4 @@
-import { orderBy } from "lodash";
+import { cloneDeep, orderBy } from "lodash";
 
 export interface DownloadedFile {
 
@@ -7,9 +7,10 @@ export interface DownloadedFile {
 export interface BackupService {
     console: Console;
 
-    downloadBackup(props: { filePrefix: string }): Promise<Buffer>;
-    uploadBackup(props: { fileName: string, filePath: string }): Promise<void>;
+    getBackup(props: { fileName?: string }): Promise<Buffer>;
+    uploadBackup(props: { fileName?: string, filePath?: string, buffer?: Buffer }): Promise<void>;
     pruneOldBackups(props: { maxBackups: number, filePrefix: string }): Promise<number>;
+    getBackupsList(props: { filePrefix: string }): Promise<string[]>;
 }
 
 export enum BackupServiceEnum {
@@ -19,8 +20,8 @@ export enum BackupServiceEnum {
 
 export const fileExtension = '.zip';
 
-export const findFilesToRemove = (props: { fileNames: string[], filesToKeep: number, filePrefix: string }) => {
-    const { fileNames, filePrefix, filesToKeep } = props;
+export const findFilesToRemove = (props: { fileNames: string[], filesToKeep?: number, filePrefix: string }) => {
+    const { fileNames, filePrefix, filesToKeep = 0 } = props;
     const fileDateMap: Record<string, number> = {};
 
     for (const fileName of fileNames) {
@@ -41,7 +42,7 @@ export const findFilesToRemove = (props: { fileNames: string[], filesToKeep: num
 
     const filesOrderedByDate = orderBy(fileNames, fileName => fileDateMap[fileName], 'asc');
     const filesCountToRemove = filesOrderedByDate.length - filesToKeep;
-    const filesToRemove = filesOrderedByDate.splice(0, filesCountToRemove);
+    const filesToRemove = (cloneDeep(filesOrderedByDate)).splice(0, filesCountToRemove);
 
-    return filesToRemove;
+    return { filesOrderedByDate, filesToRemove };
 }

@@ -10,12 +10,24 @@ export class Sftp implements BackupService {
     ) {
     }
 
-    log(message?: any, ...optionalParams: any[]) {
-        this.console.log(`[SFTP] `, message, ...optionalParams);
+    getBackup(props: { fileName?: string; }): Promise<Buffer> {
+        throw new Error("Method not implemented. Use Local source");
     }
 
-    downloadBackup(props: { filePrefix: string, targetDirectory?: string }): Promise<Buffer> {
-        throw new Error("Method not implemented.");
+    async getBackupsList(props: { filePrefix: string; }): Promise<string[]> {
+        const { filePrefix } = props;
+        const client = await this.getClient();
+
+        const allFiles = await client.list(this.targetDirectory, file => file.name.endsWith(fileExtension));
+        const allFileNames = allFiles.map(file => file.name);
+
+        const { filesToRemove } = findFilesToRemove({ fileNames: allFileNames, filePrefix });
+
+        return filesToRemove;
+    }
+
+    log(message?: any, ...optionalParams: any[]) {
+        this.console.log(`[SFTP] `, message, ...optionalParams);
     }
 
     private async getClient() {
@@ -49,10 +61,11 @@ export class Sftp implements BackupService {
         const allFiles = await client.list(this.targetDirectory, file => file.name.endsWith(fileExtension));
         const allFileNames = allFiles.map(file => file.name);
 
-        const filesToRemove = findFilesToRemove({ fileNames: allFileNames, filesToKeep: maxBackups, filePrefix });
+        const { filesToRemove } = findFilesToRemove({ fileNames: allFileNames, filesToKeep: maxBackups, filePrefix });
         const filesCountToRemove = filesToRemove.length;
 
         if (filesCountToRemove > 0) {
+            this.log(`Removing ${filesCountToRemove} old backups`);
             for (const fileName of filesToRemove) {
                 try {
                     const filePAth = `${this.targetDirectory}/${fileName}`;

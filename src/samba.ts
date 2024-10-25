@@ -22,12 +22,24 @@ export class Samba extends SambaClient implements BackupService {
         super(props);
     }
 
-    log(message?: any, ...optionalParams: any[]) {
-        this.console.log(`[SAMBA] `, message, ...optionalParams);
+    async getBackup(props: { fileName?: string; }): Promise<Buffer> {
+        const { fileName } = props;
+
+        // const buffer = await this.listFiles(filePrefix, fileExtension);
+        throw new Error("Method not implemented. Use Local source");
     }
 
-    downloadBackup(props: { filePrefix: string }): Promise<Buffer> {
-        throw new Error("Method not implemented.");
+    async getBackupsList(props: { filePrefix: string; }): Promise<string[]> {
+        const { filePrefix } = props;
+        const allFiles = await this.listFiles(filePrefix, fileExtension);
+
+        const { filesOrderedByDate } = findFilesToRemove({ fileNames: allFiles, filePrefix });
+
+        return filesOrderedByDate;
+    }
+
+    log(message?: any, ...optionalParams: any[]) {
+        this.console.log(`[SAMBA] `, message, ...optionalParams);
     }
 
     async uploadBackup(props: { fileName: string; filePath: string; }) {
@@ -46,10 +58,11 @@ export class Samba extends SambaClient implements BackupService {
 
         const allFiles = await this.listFiles(filePrefix, fileExtension);
 
-        const filesToRemove = findFilesToRemove({ fileNames: allFiles, filesToKeep: maxBackups, filePrefix });
+        const { filesToRemove } = findFilesToRemove({ fileNames: allFiles, filesToKeep: maxBackups, filePrefix });
         const filesCountToRemove = filesToRemove.length;
 
         if (filesCountToRemove > 0) {
+            this.log(`Removing ${filesCountToRemove} old backups`);
             for (const fileName of filesToRemove) {
                 try {
                     await this.deleteFile(fileName);
