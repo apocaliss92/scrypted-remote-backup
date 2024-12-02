@@ -1,28 +1,27 @@
-import sdk, { ScryptedDeviceBase, Setting, SettingValue } from "@scrypted/sdk";
+import sdk, { Setting, SettingValue } from "@scrypted/sdk";
 import { StorageSettings } from "@scrypted/sdk/storage-settings";
 import cron, { ScheduledTask } from 'node-cron';
 import { Samba } from "./samba";
-import { BackupServiceEnum, fileExtension, findFilesToRemove } from "./types";
+import { BackupServiceEnum } from "./types";
 import { Local } from "./local";
 import { Sftp } from "./sftp";
-import fs from "fs"
+import { BasePlugin, getBaseSettings } from '../../scrypted-apocaliss-base/src/basePlugin';
 
 enum RestoreSource {
     Local = 'Local',
     Cloud = 'Cloud',
 }
 
-export default class RemoteBackup extends ScryptedDeviceBase {
+export default class RemoteBackup extends BasePlugin {
     private cronTask: ScheduledTask;
     private localService: Local;
 
     storageSettings = new StorageSettings(this, {
-        pluginEnabled: {
-            title: 'Plugin enabled',
-            type: 'boolean',
-            defaultValue: true,
-            immediate: true,
-        },
+        ...getBaseSettings({
+            onPluginSwitch: async (oldValue, newValue) => {
+                await this.startStop(newValue);
+            },
+        }),
         backupService: {
             title: 'Backup service',
             type: 'string',
@@ -50,7 +49,8 @@ export default class RemoteBackup extends ScryptedDeviceBase {
         cronSchedule: {
             title: 'Cron scheduler',
             type: 'string',
-            defaultValue: '0 4 * * *'
+            defaultValue: '0 4 * * *',
+            onPut: async () => await this.start()
         },
         backupNow: {
             title: 'Manual backup',
@@ -182,20 +182,42 @@ export default class RemoteBackup extends ScryptedDeviceBase {
     });
 
     constructor(nativeId: string) {
-        super(nativeId);
-
-        const keysToReinitialize: (keyof typeof this.storageSettings.settings)[] = [
-            'cronSchedule',
-            'pluginEnabled',
-        ]
-
-        keysToReinitialize.forEach(key => this.storageSettings.settings[key].onPut = async () => this.initScheduler());
+        super(nativeId, {
+            pluginFriendlyName: 'Remote backup',
+        });
 
 
-        this.localService = new Local(this.console);
-        this.storageSettings.settings.checkFiles.onPut = async () => await this.checkMaxFiles();
-        this.initScheduler().then().catch(console.log);
-        this.fetchFiles().then().catch(console.log);
+        this.localService = new Local(this.getLogger());
+
+        this.fetchFiles().then().catch(this.getLogger().log);
+        this.start().then().catch(this.getLogger().log);
+    }
+
+    async startStop(enabled: boolean) {
+        if (enabled) {
+            await this.start();
+        } else {
+            await this.stop();
+        }
+    }
+
+    async start() {
+        if (!this.storageSettings.getItem('pluginEnabled')) {
+            this.getLogger().log('Plugin is disabled');
+
+            return;
+        }
+        await this.stop();
+
+        await this.initScheduler();
+    }
+
+    async stop() {
+        if (this.cronTask) {
+            this.getLogger().log('Stopping scheduler');
+            this.cronTask.stop();
+            this.cronTask = undefined;
+        }
     }
 
     async getSettings() {
@@ -210,20 +232,16 @@ export default class RemoteBackup extends ScryptedDeviceBase {
             }
         })
 
-        const settings: Setting[] = await this.storageSettings.getSettings();
+        const settings: Setting[] = await super.getSettings();
 
         return settings;
-    }
-
-    putSetting(key: string, value: SettingValue): Promise<void> {
-        return this.storageSettings.putSetting(key, value);
     }
 
     async fetchFiles() {
         const filePrefix = this.storageSettings.getItem('filePrefix');
         const restoreSource = this.storageSettings.getItem('restoreSource') as RestoreSource;
 
-        this.console.log(`Fetching available backups`);
+        this.getLogger().log(`Fetching available backups`);
         try {
             let backups = [];
             if (restoreSource === RestoreSource.Local) {
@@ -232,48 +250,51 @@ export default class RemoteBackup extends ScryptedDeviceBase {
             } else {
                 backups = await this.localService.getBackupsList({ filePrefix });
             }
-            this.console.log(`${backups.length} backups found.`);
+            this.getLogger().log(`${backups.length} backups found.`);
             this.storageSettings.settings.backupToRestore.choices = backups;
         } catch (e) {
-            this.console.log('Error fetching available backups', e);
+            this.getLogger().log('Error fetching available backups', e);
         };
     }
 
     async initScheduler() {
         try {
-            if (this.cronTask) {
-                this.console.log('Stopping scheduler');
-                this.cronTask.stop();
-                this.cronTask = undefined;
-            }
-
-            if (!this.storageSettings.getItem('pluginEnabled')) {
-                this.console.log('Plugin is disabled');
+            const { cronSchedule, devNotifier, backupService } = this.storageSettings.values;
+            if (!cronSchedule) {
+                this.getLogger().log(`Cron scheduler is not set`);
 
                 return;
             }
 
-            const cronTime = this.storageSettings.getItem('cronSchedule');
-            if (!cronTime) {
-                this.console.log(`Cron scheduler is not set`);
+            this.getLogger().log(`Starting scheduler with ${cronSchedule}`);
 
-                return;
-            }
-
-            this.console.log(`Starting scheduler with ${cronTime}`);
-
-            this.cronTask = cron.schedule(cronTime, async () => {
+            this.cronTask = cron.schedule(cronSchedule, async () => {
                 try {
                     const now = new Date();
-                    this.console.log(`Executing scheduled backup at ${now.toLocaleString()}`);
+                    this.getLogger().log(`Executing scheduled backup at ${now.toLocaleString()}`);
                     await this.executeBackup(now);
-                    await this.checkMaxFiles();
+
+                    const { localFilesRemoved, serviceFilesRemoved } = await this.checkMaxFiles();
+
+                    if (devNotifier) {
+                        let message = `Backup executed on ${backupService}.\n`;
+                        message += `${serviceFilesRemoved} backups removed on ${backupService}\n`;
+                        message += `${localFilesRemoved} backups removed locally`;
+                        await devNotifier.sendNotification(this.opts.pluginFriendlyName, {
+                            body: message
+                        })
+                    }
                 } catch (e) {
-                    this.console.log('Error executing the scheduled backup: ', e);
+                    this.getLogger().log('Error executing the scheduled backup: ', e);
+                    if (devNotifier) {
+                        await devNotifier.sendNotification(this.opts.pluginFriendlyName, {
+                            body: `Error executing backup: ${e}`
+                        })
+                    }
                 }
             });
         } catch (e) {
-            this.console.log('Error in initScheduler', e);
+            this.getLogger().log('Error in initScheduler', e);
         }
     }
 
@@ -296,7 +317,7 @@ export default class RemoteBackup extends ScryptedDeviceBase {
                     maxProtocol,
                     maskCmd,
                     directory
-                }, this.console);
+                }, this.getLogger());
             } else if (this.storageSettings.values.backupService === BackupServiceEnum.SFTP) {
                 const host = this.storageSettings.getItem('sftpHost');
                 const port = this.storageSettings.getItem('sftpPort');
@@ -312,23 +333,23 @@ export default class RemoteBackup extends ScryptedDeviceBase {
                         password,
                     },
                     targetDirectory,
-                    this.console);
+                    this.getLogger());
             }
         } catch (e) {
-            this.console.log('Error during service init', e);
+            this.getLogger().log('Error during service init', e);
         }
     }
 
-    async executeBackup(date: Date) {
-        const filePrefix = this.storageSettings.getItem('filePrefix');
+    async executeBackup(date: Date,) {
+        const { filePrefix, devNotifier, backupService } = this.storageSettings.values;
         const { fileName, filePath } = await this.localService.createBackup({ date, filePrefix });
 
         const service = this.storageSettings.values.backupService as BackupServiceEnum;
 
         const serviceClient = await this.getBackupService();
-        this.console.log(`Starting upload to ${service}.`);
+        this.getLogger().log(`Starting upload to ${service}.`);
         await serviceClient.uploadBackup({ fileName, filePath });
-        this.console.log(`Upload to ${service} completed.`);
+        this.getLogger().log(`Upload to ${service} completed.`);
     }
 
     async checkMaxFiles() {
@@ -338,13 +359,15 @@ export default class RemoteBackup extends ScryptedDeviceBase {
         const filePrefix = this.storageSettings.getItem('filePrefix');
 
         const cloudClient = await this.getBackupService();
-        this.console.log(`Starting ${service} max filess cleanup.`);
+        this.getLogger().log(`Starting ${service} max filess cleanup.`);
         const serviceFilesRemoved = await cloudClient.pruneOldBackups({ filePrefix, maxBackups: maxBackupsCloud });
-        this.console.log(`${service} max files cleanup completed. Removed ${serviceFilesRemoved} backups.`);
+        this.getLogger().log(`${service} max files cleanup completed. Removed ${serviceFilesRemoved} backups.`);
 
-        this.console.log(`Starting local max filess cleanup.`);
+        this.getLogger().log(`Starting local max filess cleanup.`);
         const localFilesRemoved = await this.localService.pruneOldBackups({ filePrefix, maxBackups: maxBackupsLocal });
-        this.console.log(`Local max files cleanup completed. Removed ${localFilesRemoved} backups.`);
+        this.getLogger().log(`Local max files cleanup completed. Removed ${localFilesRemoved} backups.`);
+
+        return { serviceFilesRemoved, localFilesRemoved }
     }
 
     async restoreBackup() {
@@ -353,7 +376,7 @@ export default class RemoteBackup extends ScryptedDeviceBase {
 
         this.storageSettings.putSetting('backupToRestore', undefined);
 
-        this.console.log(`Restoring backup ${backupToRestore} from ${restoreSource}`);
+        this.getLogger().log(`Restoring backup ${backupToRestore} from ${restoreSource}`);
 
         let buffer: Buffer;
 
