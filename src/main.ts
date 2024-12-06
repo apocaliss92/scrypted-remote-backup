@@ -6,6 +6,7 @@ import { BackupServiceEnum } from "./types";
 import { Local } from "./local";
 import { Sftp } from "./sftp";
 import { BasePlugin, getBaseSettings } from '../../scrypted-apocaliss-base/src/basePlugin';
+import path from 'path';
 
 enum RestoreSource {
     Local = 'Local',
@@ -41,6 +42,11 @@ export default class RemoteBackup extends BasePlugin {
             type: 'number',
             defaultValue: 7,
             hide: true,
+        },
+        localDirectory: {
+            title: 'Local directory for the backup, default to the plugin folder/backups',
+            type: 'string',
+            placeholder: '/mnt/dir'
         },
         filePrefix: {
             title: 'File prefix. Should not contain the character "_"',
@@ -241,17 +247,16 @@ export default class RemoteBackup extends BasePlugin {
     }
 
     async fetchFiles() {
-        const filePrefix = this.storageSettings.getItem('filePrefix');
-        const restoreSource = this.storageSettings.getItem('restoreSource') as RestoreSource;
+        const { filePrefix, restoreSource, localDirectory, backupService } = this.storageSettings.values;
 
         this.getLogger().log(`Fetching available backups`);
         try {
             let backups = [];
-            if (restoreSource === RestoreSource.Local) {
+            if (restoreSource === RestoreSource.Local || backupService === BackupServiceEnum.OnlyLocal) {
                 const cloudService = await this.getBackupService();
                 backups = await cloudService.getBackupsList({ filePrefix });
             } else {
-                backups = await this.localService.getBackupsList({ filePrefix });
+                backups = await this.localService.getBackupsList({ filePrefix, backupFolder: localDirectory });
             }
             this.getLogger().log(`${backups.length} backups found.`);
             this.storageSettings.settings.backupToRestore.choices = backups;
@@ -345,8 +350,8 @@ export default class RemoteBackup extends BasePlugin {
 
     async executeBackup(date: Date) {
         const logger = this.getLogger();
-        const { filePrefix, backupService } = this.storageSettings.values;
-        const { fileName, filePath } = await this.localService.createBackup({ date, filePrefix });
+        const { filePrefix, backupService, localDirectory } = this.storageSettings.values;
+        const { fileName, filePath } = await this.localService.createBackup({ date, filePrefix, backupFolder: localDirectory });
 
         if (backupService !== BackupServiceEnum.OnlyLocal) {
             const serviceClient = await this.getBackupService();
@@ -359,22 +364,27 @@ export default class RemoteBackup extends BasePlugin {
     }
 
     async checkMaxFiles() {
-        const { backupService, maxBackupsCloud, maxBackupsLocal, filePrefix } = this.storageSettings.values;
+        const { backupService, maxBackupsCloud, maxBackupsLocal, filePrefix, localDirectory } = this.storageSettings.values;
+        let serviceFilesRemoved;
 
-        const cloudClient = await this.getBackupService();
-        this.getLogger().log(`Starting ${backupService} max filess cleanup.`);
-        const serviceFilesRemoved = await cloudClient.pruneOldBackups({ filePrefix, maxBackups: maxBackupsCloud });
-        this.getLogger().log(`${backupService} max files cleanup completed. Removed ${serviceFilesRemoved} backups.`);
+        if (backupService !== BackupServiceEnum.OnlyLocal) {
+            const cloudClient = await this.getBackupService();
+            this.getLogger().log(`Starting ${backupService} max filess cleanup.`);
+            serviceFilesRemoved = await cloudClient.pruneOldBackups({ filePrefix, maxBackups: maxBackupsCloud });
+            this.getLogger().log(`${backupService} max files cleanup completed. Removed ${serviceFilesRemoved} backups.`);
+        } else {
+            this.getLogger().log('Skipping cloud backups');
+        }
 
         this.getLogger().log(`Starting local max filess cleanup.`);
-        const localFilesRemoved = await this.localService.pruneOldBackups({ filePrefix, maxBackups: maxBackupsLocal });
+        const localFilesRemoved = await this.localService.pruneOldBackups({ filePrefix, maxBackups: maxBackupsLocal, backupFolder: localDirectory });
         this.getLogger().log(`Local max files cleanup completed. Removed ${localFilesRemoved} backups.`);
 
         return { serviceFilesRemoved, localFilesRemoved }
     }
 
     async restoreBackup() {
-        const { restoreSource, backupToRestore } = this.storageSettings.values;
+        const { restoreSource, backupToRestore, localDirectory } = this.storageSettings.values;
 
         this.storageSettings.putSetting('backupToRestore', undefined);
 
@@ -386,7 +396,7 @@ export default class RemoteBackup extends BasePlugin {
             const cloudClient = await this.getBackupService();
             buffer = await cloudClient.getBackup({ fileName: backupToRestore });
         } else {
-            buffer = await this.localService.getBackup({ fileName: backupToRestore });
+            buffer = await this.localService.getBackup({ fileName: backupToRestore, backupFolder: localDirectory });
         }
 
         await this.localService.uploadBackup({ buffer });

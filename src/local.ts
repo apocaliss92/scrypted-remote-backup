@@ -4,8 +4,7 @@ import fs from "fs"
 import path from 'path';
 
 export class Local implements BackupService {
-    private backupFolder = path.join(process.env.SCRYPTED_PLUGIN_VOLUME, 'backups');
-
+    private defaultBackupFolder = path.join(process.env.SCRYPTED_PLUGIN_VOLUME, 'backups');
     constructor(public console: Console) { }
 
     log(message?: any, ...optionalParams: any[]) {
@@ -17,32 +16,33 @@ export class Local implements BackupService {
         await bkup.restoreBackup(props.buffer);
     }
 
-    async getBackupsList(props: { filePrefix: string; }): Promise<string[]> {
-        const { filePrefix } = props;
-        const allFiles = (await fs.promises.readdir(this.backupFolder)).filter(fileName => fileName.startsWith(filePrefix));
+    async getBackupsList(props: { filePrefix: string, backupFolder?: string }): Promise<string[]> {
+        const { filePrefix, backupFolder = this.defaultBackupFolder } = props;
+        const allFiles = (await fs.promises.readdir(backupFolder)).filter(fileName => fileName.startsWith(filePrefix));
 
         const { filesOrderedByDate } = findFilesToRemove({ fileNames: allFiles, filePrefix });
 
         return filesOrderedByDate;
     }
 
-    async getBackup(props: { fileName: string }) {
-        const { fileName } = props;
+    async getBackup(props: { fileName: string, backupFolder?: string }) {
+        const { fileName, backupFolder = this.defaultBackupFolder } = props;
         this.log(`Looking for the backup ${fileName}`);
 
         try {
-            return await fs.promises.readFile(`${this.backupFolder}/${fileName}`);
+            return await fs.promises.readFile(`${backupFolder}/${fileName}`);
         } catch (e) {
             this.log('Error finding the backup', e);
             return;
         }
     }
 
-    private getFileNames(now: Date, filePrefix: string) {
+    private getFileNames(props: { now: Date, filePrefix: string, backupFolder?: string }) {
+        const { backupFolder = this.defaultBackupFolder, filePrefix, now } = props;
         const date = `${now.getFullYear()}_${now.getMonth() + 1}_${now.getDate()}_${now.getHours()}_${now.getMinutes()}_${now.getSeconds()}`;
         const fileName = `${filePrefix}-${date}${fileExtension}`;
 
-        const filePath = `${this.backupFolder}/${fileName}`;
+        const filePath = `${backupFolder}/${fileName}`;
 
         return {
             fileName,
@@ -50,20 +50,20 @@ export class Local implements BackupService {
         }
     }
 
-    async createBackup(props: { date: Date, filePrefix: string }) {
+    async createBackup(props: { date: Date, filePrefix: string, backupFolder?: string }) {
         this.log(`Starting backup download.`);
 
         try {
-            const { filePrefix, date } = props;
-            if (!fs.existsSync(this.backupFolder)) {
-                this.log(`Creating backups dir at: ${this.backupFolder}`)
-                fs.mkdirSync(this.backupFolder);
+            const { filePrefix, date, backupFolder = this.defaultBackupFolder } = props;
+            if (!fs.existsSync(backupFolder)) {
+                this.log(`Creating backups dir at: ${backupFolder}`)
+                fs.mkdirSync(backupFolder);
             }
 
             const bkup = await sdk.systemManager.getComponent('backup');
             const buffer = await bkup.createBackup();
 
-            const { filePath, fileName } = this.getFileNames(date, filePrefix);
+            const { filePath, fileName } = this.getFileNames({ now: date, filePrefix, backupFolder });
 
             await fs.promises.writeFile(filePath, buffer);
 
@@ -90,9 +90,9 @@ export class Local implements BackupService {
         }
     }
 
-    async pruneOldBackups(props: { maxBackups: number; filePrefix: string; }): Promise<number> {
-        const { filePrefix, maxBackups } = props;
-        const allFiles = (await fs.promises.readdir(this.backupFolder)).filter(fileName => fileName.startsWith(filePrefix));
+    async pruneOldBackups(props: { maxBackups: number; filePrefix: string, backupFolder?: string }): Promise<number> {
+        const { filePrefix, maxBackups, backupFolder = this.defaultBackupFolder } = props;
+        const allFiles = (await fs.promises.readdir(backupFolder)).filter(fileName => fileName.startsWith(filePrefix));
 
         const { filesToRemove } = findFilesToRemove({ fileNames: allFiles, filesToKeep: maxBackups, filePrefix });
         const filesCountToRemove = filesToRemove.length;
@@ -101,7 +101,7 @@ export class Local implements BackupService {
             this.log(`Removing ${filesCountToRemove} old backups`);
             for (const fileName of filesToRemove) {
                 try {
-                    await fs.promises.unlink(`${this.backupFolder}/${fileName}`);
+                    await fs.promises.unlink(`${backupFolder}/${fileName}`);
                     this.log(`File ${fileName} removed`);
                 } catch (e) {
                     this.log(`Error removing file ${fileName}`, e);
