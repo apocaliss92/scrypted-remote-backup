@@ -14,6 +14,7 @@ export interface BackupService {
 }
 
 export enum BackupServiceEnum {
+    OnlyLocal = 'Only local',
     Samba = 'Samba',
     SFTP = 'SFTP',
 }

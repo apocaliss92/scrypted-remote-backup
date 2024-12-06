@@ -25,8 +25,8 @@ export default class RemoteBackup extends BasePlugin {
         backupService: {
             title: 'Backup service',
             type: 'string',
-            choices: [BackupServiceEnum.Samba, BackupServiceEnum.SFTP],
-            defaultValue: BackupServiceEnum.Samba,
+            choices: [BackupServiceEnum.Samba, BackupServiceEnum.OnlyLocal, BackupServiceEnum.SFTP],
+            defaultValue: BackupServiceEnum.OnlyLocal,
             immediate: true,
         },
         maxBackupsLocal: {
@@ -40,6 +40,7 @@ export default class RemoteBackup extends BasePlugin {
             description: 'Maximum amount of backups to retain on the selected backup service',
             type: 'number',
             defaultValue: 7,
+            hide: true,
         },
         filePrefix: {
             title: 'File prefix. Should not contain the character "_"',
@@ -224,6 +225,8 @@ export default class RemoteBackup extends BasePlugin {
         const backupService = this.storageSettings.getItem('backupService');
         const allServices = this.storageSettings.settings.backupService.choices;
 
+        this.storageSettings.settings.maxBackupsCloud.hide = backupService === BackupServiceEnum.OnlyLocal;
+
         Object.entries(this.storageSettings.settings).forEach(([_, setting]) => {
             if (setting.group === backupService) {
                 setting.hide = false;
@@ -340,28 +343,28 @@ export default class RemoteBackup extends BasePlugin {
         }
     }
 
-    async executeBackup(date: Date,) {
-        const { filePrefix, devNotifier, backupService } = this.storageSettings.values;
+    async executeBackup(date: Date) {
+        const logger = this.getLogger();
+        const { filePrefix, backupService } = this.storageSettings.values;
         const { fileName, filePath } = await this.localService.createBackup({ date, filePrefix });
 
-        const service = this.storageSettings.values.backupService as BackupServiceEnum;
-
-        const serviceClient = await this.getBackupService();
-        this.getLogger().log(`Starting upload to ${service}.`);
-        await serviceClient.uploadBackup({ fileName, filePath });
-        this.getLogger().log(`Upload to ${service} completed.`);
+        if (backupService !== BackupServiceEnum.OnlyLocal) {
+            const serviceClient = await this.getBackupService();
+            logger.log(`Starting upload to ${backupService}.`);
+            await serviceClient.uploadBackup({ fileName, filePath });
+            logger.log(`Upload to ${backupService} completed.`);
+        } else {
+            logger.log(`Skipping cloud backup.`);
+        }
     }
 
     async checkMaxFiles() {
-        const service = this.storageSettings.getItem('backupService') as BackupServiceEnum;
-        const maxBackupsCloud = this.storageSettings.getItem('maxBackupsCloud') as number;
-        const maxBackupsLocal = this.storageSettings.getItem('maxBackupsLocal') as number;
-        const filePrefix = this.storageSettings.getItem('filePrefix');
+        const { backupService, maxBackupsCloud, maxBackupsLocal, filePrefix } = this.storageSettings.values;
 
         const cloudClient = await this.getBackupService();
-        this.getLogger().log(`Starting ${service} max filess cleanup.`);
+        this.getLogger().log(`Starting ${backupService} max filess cleanup.`);
         const serviceFilesRemoved = await cloudClient.pruneOldBackups({ filePrefix, maxBackups: maxBackupsCloud });
-        this.getLogger().log(`${service} max files cleanup completed. Removed ${serviceFilesRemoved} backups.`);
+        this.getLogger().log(`${backupService} max files cleanup completed. Removed ${serviceFilesRemoved} backups.`);
 
         this.getLogger().log(`Starting local max filess cleanup.`);
         const localFilesRemoved = await this.localService.pruneOldBackups({ filePrefix, maxBackups: maxBackupsLocal });
@@ -371,8 +374,7 @@ export default class RemoteBackup extends BasePlugin {
     }
 
     async restoreBackup() {
-        const restoreSource = this.storageSettings.getItem('restoreSource') as RestoreSource;
-        const backupToRestore = this.storageSettings.getItem('backupToRestore');
+        const { restoreSource, backupToRestore } = this.storageSettings.values;
 
         this.storageSettings.putSetting('backupToRestore', undefined);
 

@@ -50,10 +50,8 @@ export class Local implements BackupService {
         }
     }
 
-
     async createBackup(props: { date: Date, filePrefix: string }) {
         this.log(`Starting backup download.`);
-        const { date, filePrefix } = props;
 
         try {
             const { filePrefix, date } = props;
