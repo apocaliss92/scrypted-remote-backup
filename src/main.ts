@@ -1,4 +1,4 @@
-import sdk, { Setting, SettingValue } from "@scrypted/sdk";
+import { Setting } from "@scrypted/sdk";
 import { StorageSettings } from "@scrypted/sdk/storage-settings";
 import cron, { ScheduledTask } from 'node-cron';
 import { Samba } from "./samba";
@@ -6,7 +6,6 @@ import { BackupServiceEnum } from "./types";
 import { Local } from "./local";
 import { Sftp } from "./sftp";
 import { BasePlugin, getBaseSettings } from '../../scrypted-apocaliss-base/src/basePlugin';
-import path from 'path';
 
 enum RestoreSource {
     Local = 'Local',
@@ -253,10 +252,10 @@ export default class RemoteBackup extends BasePlugin {
         try {
             let backups = [];
             if (restoreSource === RestoreSource.Local || backupService === BackupServiceEnum.OnlyLocal) {
+                backups = await this.localService.getBackupsList({ filePrefix, backupFolder: localDirectory });
+            } else {
                 const cloudService = await this.getBackupService();
                 backups = await cloudService.getBackupsList({ filePrefix });
-            } else {
-                backups = await this.localService.getBackupsList({ filePrefix, backupFolder: localDirectory });
             }
             this.getLogger().log(`${backups.length} backups found.`);
             this.storageSettings.settings.backupToRestore.choices = backups;
