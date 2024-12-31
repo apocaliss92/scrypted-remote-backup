@@ -255,7 +255,11 @@ export default class RemoteBackup extends BasePlugin {
                 backups = await this.localService.getBackupsList({ filePrefix, backupFolder: localDirectory });
             } else {
                 const cloudService = await this.getBackupService();
-                backups = await cloudService.getBackupsList({ filePrefix });
+                if (cloudService) {
+                    backups = await cloudService.getBackupsList({ filePrefix });
+                } else {
+                    this.getLogger().log(`Error setting up cloud service ${backupService}.`);
+                }
             }
             this.getLogger().log(`${backups.length} backups found.`);
             this.storageSettings.settings.backupToRestore.choices = backups;
@@ -354,8 +358,12 @@ export default class RemoteBackup extends BasePlugin {
 
         if (backupService !== BackupServiceEnum.OnlyLocal) {
             const serviceClient = await this.getBackupService();
-            logger.log(`Starting upload to ${backupService}.`);
-            await serviceClient.uploadBackup({ fileName, filePath });
+            if (serviceClient) {
+                logger.log(`Starting upload to ${backupService}.`);
+                await serviceClient.uploadBackup({ fileName, filePath });
+            } else {
+                this.getLogger().log(`Error setting up cloud service ${backupService}.`);
+            }
             logger.log(`Upload to ${backupService} completed.`);
         } else {
             logger.log(`Skipping cloud backup.`);
@@ -368,9 +376,13 @@ export default class RemoteBackup extends BasePlugin {
 
         if (backupService !== BackupServiceEnum.OnlyLocal) {
             const cloudClient = await this.getBackupService();
-            this.getLogger().log(`Starting ${backupService} max filess cleanup.`);
-            serviceFilesRemoved = await cloudClient.pruneOldBackups({ filePrefix, maxBackups: maxBackupsCloud });
-            this.getLogger().log(`${backupService} max files cleanup completed. Removed ${serviceFilesRemoved} backups.`);
+            if (cloudClient) {
+                this.getLogger().log(`Starting ${backupService} max filess cleanup.`);
+                serviceFilesRemoved = await cloudClient.pruneOldBackups({ filePrefix, maxBackups: maxBackupsCloud });
+                this.getLogger().log(`${backupService} max files cleanup completed. Removed ${serviceFilesRemoved} backups.`);
+            } else {
+                this.getLogger().log(`Error setting up cloud service ${backupService}.`);
+            }
         } else {
             this.getLogger().log('Skipping cloud backups');
         }
