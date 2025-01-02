@@ -6,11 +6,33 @@ import { BackupServiceEnum } from "./types";
 import { Local } from "./local";
 import { Sftp } from "./sftp";
 import { BasePlugin, getBaseSettings } from '../../scrypted-apocaliss-base/src/basePlugin';
+const { spawn } = require('child_process');
+const fs = require('fs/promises');
 
 enum RestoreSource {
     Local = 'Local',
     Cloud = 'Cloud',
 }
+
+const executeCommand = async (command, args = []) => {
+    return new Promise<void>((resolve, reject) => {
+        const process = spawn(command, args, { stdio: 'inherit' });
+
+        process.on('error', (err) => {
+            console.error(`Errore: ${err.message}`);
+            reject(err);
+        });
+
+        process.on('close', (code) => {
+            if (code === 0) {
+                console.log(`Comando terminato con successo.`);
+                resolve();
+            } else {
+                reject(new Error(`Il comando è terminato con codice di errore ${code}`));
+            }
+        });
+    });
+};
 
 export default class RemoteBackup extends BasePlugin {
     private cronTask: ScheduledTask;
@@ -192,11 +214,42 @@ export default class RemoteBackup extends BasePlugin {
             pluginFriendlyName: 'Remote backup',
         });
 
+        const logger = this.getLogger();
 
-        this.localService = new Local(this.getLogger());
+        this.localService = new Local(logger);
 
-        this.fetchFiles().then().catch(this.getLogger().log);
-        this.start().then().catch(this.getLogger().log);
+
+        this.installDependencies().then(() => {
+            this.fetchFiles().then().catch(logger.log);
+            this.start().then().catch(logger.log);
+        }).catch(logger.log);
+    }
+
+    async installDependencies() {
+        const logger = this.getLogger();
+        const isLinux = process.platform === 'linux';
+        const isMac = process.platform === 'darwin';
+
+        logger.log(`Starting dependencies install for ${process.platform}`);
+
+        try {
+            if (isLinux) {
+                await executeCommand('apt', ['install', '-y', 'smbclient']);
+            } else if (isMac) {
+                const filePath = '/opt/homebrew/etc/smb.conf';
+
+                await executeCommand('brew', ['install', 'samba']);
+                try {
+                    await fs.access(filePath);
+                } catch {
+                    await fs.writeFile(filePath, '');
+                }
+            } else {
+                logger.log(`Sorry not supported yet, report to @apocaliss to add support`);
+            }
+        } catch (e) {
+            logger.log('Error installing dependencies', e);
+        }
     }
 
     async startStop(enabled: boolean) {
