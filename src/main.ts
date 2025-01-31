@@ -40,6 +40,8 @@ export default class RemoteBackup extends BasePlugin {
 
     storageSettings = new StorageSettings(this, {
         ...getBaseSettings({
+            hideHa: true,
+            hideMqtt: true,
             onPluginSwitch: async (oldValue, newValue) => {
                 await this.startStop(newValue);
             },
@@ -79,6 +81,12 @@ export default class RemoteBackup extends BasePlugin {
             type: 'string',
             defaultValue: '0 4 * * *',
             onPut: async () => await this.start()
+        },
+        enableNotifications: {
+            title: 'Enable notifications',
+            type: 'boolean',
+            defaultValue: true,
+            immediate: true,
         },
         backupNow: {
             title: 'Manual backup',
@@ -323,7 +331,7 @@ export default class RemoteBackup extends BasePlugin {
 
     async initScheduler() {
         try {
-            const { cronSchedule, devNotifier, backupService } = this.storageSettings.values;
+            const { cronSchedule, devNotifier, backupService, enableNotifications } = this.storageSettings.values;
             if (!cronSchedule) {
                 this.getLogger().log(`Cron scheduler is not set`);
 
@@ -340,7 +348,7 @@ export default class RemoteBackup extends BasePlugin {
 
                     const { localFilesRemoved, serviceFilesRemoved } = await this.checkMaxFiles();
 
-                    if (devNotifier) {
+                    if (devNotifier && enableNotifications) {
                         let message = `Backup executed on ${backupService}.\n`;
                         message += `${serviceFilesRemoved} backups removed on ${backupService}\n`;
                         message += `${localFilesRemoved} backups removed locally`;
