@@ -2,6 +2,7 @@ import sdk from "@scrypted/sdk";
 import { BackupService, fileExtension, findFilesToRemove } from "./types";
 import fs from "fs"
 import path from 'path';
+import { getScryptedVolume } from '../../scrypted/server/src/plugin/plugin-volume';
 
 export class Local implements BackupService {
     private defaultBackupFolder = path.join(process.env.SCRYPTED_PLUGIN_VOLUME, 'backups');
@@ -59,6 +60,21 @@ export class Local implements BackupService {
                 this.log(`Creating backups dir at: ${backupFolder}`)
                 fs.mkdirSync(backupFolder);
             }
+
+            // Make sure to cleanup backups on the local folder to fix a possible issue on the server
+            const volumeDir = getScryptedVolume();
+            const backupDbPath = path.join(volumeDir, 'backup.db');
+            await fs.promises.rm(backupDbPath, {
+                recursive: true,
+                force: true,
+                maxRetries: 10,
+            });
+            const backupZip = path.join(volumeDir, 'backup.zip');
+            await fs.promises.rm(backupZip, {
+                recursive: true,
+                force: true,
+                maxRetries: 10,
+            });
 
             const bkup = await sdk.systemManager.getComponent('backup');
             const buffer = await bkup.createBackup();
