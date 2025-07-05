@@ -233,6 +233,13 @@ export default class RemoteBackup extends BasePlugin {
         }).catch(logger.log);
     }
 
+    getLogger() {
+        return super.getLoggerInternal({
+            console: this.console,
+            storage: this.storageSettings,
+        });
+    }
+
     async installDependencies() {
         const logger = this.getLogger();
         const isLinux = process.platform === 'linux';
@@ -242,7 +249,8 @@ export default class RemoteBackup extends BasePlugin {
 
         try {
             if (isLinux) {
-                await executeCommand('apt', ['install', '-y', 'smbclient']);
+                await executeCommand('apt-get', ['update']);
+                await executeCommand('apt-get', ['install', '-y', 'smbclient']);
             } else if (isMac) {
                 const filePath = '/opt/homebrew/etc/smb.conf';
 
